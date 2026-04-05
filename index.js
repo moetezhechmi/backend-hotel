@@ -16,6 +16,17 @@ const swaggerSpecs = require('./swagger');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const webpush = require('web-push');
+
+// Web-Push Configuration
+webpush.setVapidDetails(
+    'mailto:admin@hariclub.tn',
+    process.env.VAPID_PUBLIC_KEY,
+    process.env.VAPID_PRIVATE_KEY
+);
+
+// Memory store for push subscriptions (In production, this should be in DB)
+const subscriptions = {};
 
 // Ensure uploads folder exists
 const uploadDir = 'uploads';
@@ -172,6 +183,18 @@ app.get('/api/notifications', async (req, res) => {
     }
 });
 
+// Store Push Subscription
+app.post('/api/notifications/subscribe', (req, res) => {
+    const { clientId, subscription } = req.body;
+    if (clientId && subscription) {
+        // We store it by clientId (in memory for now, should ideally be in DB)
+        subscriptions[clientId] = subscription;
+        res.status(201).json({ success: true });
+    } else {
+        res.status(400).json({ success: false });
+    }
+});
+
 // Admin Endpoints
 
 app.get('/api/admin/requests', authenticateAdmin, async (req, res) => {
@@ -216,6 +239,22 @@ app.put('/api/admin/requests/:type/:id', authenticateAdmin, async (req, res) => 
             io.to(roomName).emit('status_changed', { 
                 type, id, statut, message
             });
+
+            // Send Real Push Notification via Web-Push
+            const subscription = subscriptions[activity.client_id];
+            if (subscription) {
+              const payload = JSON.stringify({
+                title: type === 'order' ? 'Statut de Commande' : 'Statut de Service',
+                body: message,
+                url: '/client' 
+              });
+              webpush.sendNotification(subscription, payload).catch(err => {
+                console.error("Error sending push notification:", err);
+                if (err.statusCode === 410) {
+                  delete subscriptions[activity.client_id]; // Clean up expired subscriptions
+                }
+              });
+            }
         }
 
 
