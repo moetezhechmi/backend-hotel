@@ -4,13 +4,13 @@ const { Sequelize, DataTypes, Op } = require('sequelize');
 const bcrypt = require('bcrypt');
 
 const sequelize = new Sequelize(
-    process.env.DB_NAME || 'hariclubhotel', 
-    process.env.DB_USER || 'root', 
-    process.env.DB_PASSWORD || '', 
+    process.env.DB_NAME || process.env.MYSQLDATABASE || 'hariclubhotel', 
+    process.env.DB_USER || process.env.MYSQLUSER || 'root', 
+    process.env.DB_PASSWORD || process.env.MYSQLPASSWORD || '', 
     {
-        host: process.env.DB_HOST || 'localhost',
+        host: process.env.DB_HOST || process.env.MYSQLHOST || 'localhost',
         dialect: process.env.DB_DIALECT || 'mysql',
-        port: process.env.DB_PORT || 3306,
+        port: process.env.DB_PORT || process.env.MYSQLPORT || 3306,
         logging: false
     }
 );
