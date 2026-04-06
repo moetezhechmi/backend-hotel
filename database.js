@@ -145,9 +145,14 @@ Client.hasMany(Notification, { foreignKey: 'client_id' });
 Notification.belongsTo(Client, { foreignKey: 'client_id' });
 
 const seedDatabase = async () => {
-    // Sync database without 'alter: true' to avoid ER_TOO_MANY_KEYS bug in MySQL/Sequelize
+    // Sync database without 'alter: true' globally to avoid ER_TOO_MANY_KEYS bug
     // In production, use migrations instead.
     await sequelize.sync();
+    try {
+        await Notification.sync({ alter: true });
+    } catch (e) {
+        console.log("Could not alter Notification table");
+    }
     
     // Cleanup old notifications (older than 7 days)
     const sevenDaysAgo = new Date();

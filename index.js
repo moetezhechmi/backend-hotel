@@ -195,13 +195,39 @@ app.post('/api/notifications/subscribe', (req, res) => {
 });
 
 // Admin: Send custom notification
-app.post('/api/admin/notifications/send', authenticateAdmin, (req, res) => {
+app.post('/api/admin/notifications/send', authenticateAdmin, async (req, res) => {
   const { clientId: client_id, title, body, url } = req.body;
   const payload = JSON.stringify({ 
       title: title || 'Hari Club Hotel', 
       body: body, 
       url: url || '/client/notifications' 
   });
+
+  try {
+      const dbNotif = await Notification.create({
+          client_id: client_id === 'all' ? null : client_id,
+          title: title || 'Hari Club Hotel',
+          message: body,
+          type: 'MARKETING',
+          refId: null,
+          refType: url || '/client/notifications', // Stoare URL here
+          isGlobal: client_id === 'all'
+      });
+
+      // Emit to all clients so they see it live
+      io.emit('new_activity', {
+          type: 'MARKETING',
+          message: body,
+          title: title || 'Hari Club Hotel',
+          data: {
+             id: dbNotif.id,
+             refId: null,
+             refType: url || '/client/notifications'
+          }
+      });
+  } catch (err) {
+      console.error('Erreur sauvegarde notif marketing', err);
+  }
 
   if (client_id === 'all') {
       const subs = Object.entries(subscriptions);
