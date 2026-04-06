@@ -8,7 +8,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
-const { sequelize, Hotel, Client, Chambre, CodeAcces, Admin, Commande, DemandeService, Activitee, Experience, MenuItem, InternalService, Notification, LieuVisite, seedDatabase } = require('./database');
+const { sequelize, Hotel, Client, Chambre, CodeAcces, Admin, Commande, DemandeService, Activitee, Experience, MenuItem, InternalService, Notification, LieuVisite, MarketingPage, seedDatabase } = require('./database');
 
 const { Op } = require('sequelize');
 const swaggerUi = require('swagger-ui-express');
@@ -164,15 +164,15 @@ app.get('/api/clients/:id/activity', async (req, res) => {
 
 app.get('/api/notifications', async (req, res) => {
     try {
-        const { clientId } = req.query;
-        if (!clientId) return res.status(400).json({ success: false });
+        const { clientId: client_id } = req.query;
+        if (!client_id) return res.status(400).json({ success: false });
 
         const sevenDaysAgo = new Date();
         sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
         const notifs = await Notification.findAll({
             where: {
-                [Op.or]: [{ clientId }, { isGlobal: true }],
+                [Op.or]: [{ client_id }, { isGlobal: true }],
                 createdAt: { [Op.gt]: sevenDaysAgo }
             },
             order: [['createdAt', 'DESC']]
@@ -185,14 +185,46 @@ app.get('/api/notifications', async (req, res) => {
 
 // Store Push Subscription
 app.post('/api/notifications/subscribe', (req, res) => {
-    const { clientId, subscription } = req.body;
-    if (clientId && subscription) {
-        // We store it by clientId (in memory for now, should ideally be in DB)
-        subscriptions[clientId] = subscription;
+    const { clientId: client_id, subscription } = req.body;
+    if (client_id && subscription) {
+        subscriptions[client_id] = subscription;
         res.status(201).json({ success: true });
     } else {
         res.status(400).json({ success: false });
     }
+});
+
+// Admin: Send custom notification
+app.post('/api/admin/notifications/send', authenticateAdmin, (req, res) => {
+  const { clientId: client_id, title, body, url } = req.body;
+  const payload = JSON.stringify({ 
+      title: title || 'Hari Club Hotel', 
+      body: body, 
+      url: url || '/client/notifications' 
+  });
+
+  if (client_id === 'all') {
+      const subs = Object.entries(subscriptions);
+      console.log(`Envoi global à ${subs.length} clients.`);
+      subs.forEach(([id, sub]) => {
+          webpush.sendNotification(sub, payload).catch(err => {
+              console.error(`Erreur global (Client ${id}):`, err);
+              if (err.statusCode === 410) delete subscriptions[id];
+          });
+      });
+      return res.json({ success: true, count: subs.length });
+  } else {
+      const sub = subscriptions[client_id];
+      if (!sub) return res.status(404).json({ success: false, message: 'Client non connecté aux notifications.' });
+
+      webpush.sendNotification(sub, payload)
+          .then(() => res.json({ success: true }))
+          .catch(err => {
+              console.error('Erreur push admin:', err);
+              if (err.statusCode === 410) delete subscriptions[client_id];
+              res.status(500).json({ success: false, error: err.message });
+          });
+  }
 });
 
 // Admin Endpoints
@@ -226,7 +258,7 @@ app.put('/api/admin/requests/:type/:id', authenticateAdmin, async (req, res) => 
             
             // Save to DB for sync later
             await Notification.create({
-                clientId: activity.client_id,
+                client_id: activity.client_id,
                 chambre: String(activity.chambre),
                 title: type === 'order' ? 'Commande' : 'Service',
                 message,
@@ -246,7 +278,7 @@ app.put('/api/admin/requests/:type/:id', authenticateAdmin, async (req, res) => 
               const payload = JSON.stringify({
                 title: type === 'order' ? 'Statut de Commande' : 'Statut de Service',
                 body: message,
-                url: '/client' 
+                url: '/client/services?modal=history' 
               });
               webpush.sendNotification(subscription, payload).catch(err => {
                 console.error("Error sending push notification:", err);
@@ -612,6 +644,54 @@ app.put('/api/admin/lieux-visite/:id', authenticateAdmin, async (req, res) => {
 app.delete('/api/admin/lieux-visite/:id', authenticateAdmin, async (req, res) => {
     try {
         await LieuVisite.destroy({ where: { id: req.params.id } });
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false });
+    }
+});
+ 
+// Marketing Pages
+app.get('/api/pages/:slug', async (req, res) => {
+    try {
+        const page = await MarketingPage.findOne({ where: { slug: req.params.slug, statut: 'Publié' } });
+        if (!page) return res.status(404).json({ success: false, message: 'Page non trouvée' });
+        res.json({ success: true, page });
+    } catch (err) {
+        res.status(500).json({ success: false });
+    }
+});
+ 
+app.get('/api/admin/pages', authenticateAdmin, async (req, res) => {
+    try {
+        const pages = await MarketingPage.findAll();
+        res.json({ success: true, pages });
+    } catch (err) {
+        res.status(500).json({ success: false });
+    }
+});
+ 
+app.post('/api/admin/pages', authenticateAdmin, async (req, res) => {
+    try {
+        const page = await MarketingPage.create(req.body);
+        res.json({ success: true, page });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: 'Erreur création page' });
+    }
+});
+ 
+app.put('/api/admin/pages/:id', authenticateAdmin, async (req, res) => {
+    try {
+        await MarketingPage.update(req.body, { where: { id: req.params.id } });
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false });
+    }
+});
+ 
+app.delete('/api/admin/pages/:id', authenticateAdmin, async (req, res) => {
+    try {
+        await MarketingPage.destroy({ where: { id: req.params.id } });
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ success: false });

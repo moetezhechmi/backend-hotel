@@ -107,7 +107,7 @@ const LieuVisite = sequelize.define('LieuVisite', {
 });
 
 const Notification = sequelize.define('Notification', {
-    clientId: { type: DataTypes.INTEGER },
+    client_id: { type: DataTypes.INTEGER },
     chambre: { type: DataTypes.STRING },
     title: { type: DataTypes.STRING },
     message: { type: DataTypes.TEXT, allowNull: false },
@@ -115,6 +115,14 @@ const Notification = sequelize.define('Notification', {
     refId: { type: DataTypes.INTEGER }, 
     refType: { type: DataTypes.STRING },
     isGlobal: { type: DataTypes.BOOLEAN, defaultValue: false }
+});
+ 
+const MarketingPage = sequelize.define('MarketingPage', {
+    slug: { type: DataTypes.STRING, unique: true, allowNull: false },
+    titre: { type: DataTypes.STRING, allowNull: false },
+    contenu: { type: DataTypes.TEXT, allowNull: false }, // HTML or JSON
+    image: { type: DataTypes.STRING },
+    statut: { type: DataTypes.STRING, defaultValue: 'Brouillon' } // Brouillon, Publié
 });
 
 // Relationships
@@ -214,5 +222,5 @@ const seedDatabase = async () => {
     }
 };
 
-module.exports = { sequelize, Hotel, Client, Chambre, CodeAcces, Admin, Commande, DemandeService, Activitee, Experience, MenuItem, InternalService, Notification, LieuVisite, seedDatabase };
+module.exports = { sequelize, Hotel, Client, Chambre, CodeAcces, Admin, Commande, DemandeService, Activitee, Experience, MenuItem, InternalService, Notification, LieuVisite, MarketingPage, seedDatabase };
 
