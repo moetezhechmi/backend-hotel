@@ -116,6 +116,11 @@ const Notification = sequelize.define('Notification', {
     refType: { type: DataTypes.STRING },
     isGlobal: { type: DataTypes.BOOLEAN, defaultValue: false }
 });
+
+const PushSubscription = sequelize.define('PushSubscription', {
+    client_id: { type: DataTypes.INTEGER, allowNull: false, unique: true },
+    subscription: { type: DataTypes.JSON, allowNull: false }
+});
  
 const MarketingPage = sequelize.define('MarketingPage', {
     slug: { type: DataTypes.STRING, unique: true, allowNull: false },
@@ -143,6 +148,9 @@ DemandeService.belongsTo(Client, { foreignKey: 'client_id' });
 
 Client.hasMany(Notification, { foreignKey: 'client_id' });
 Notification.belongsTo(Client, { foreignKey: 'client_id' });
+
+Client.hasOne(PushSubscription, { foreignKey: 'client_id' });
+PushSubscription.belongsTo(Client, { foreignKey: 'client_id' });
 
 const seedDatabase = async () => {
     // Sync database without 'alter: true' globally to avoid ER_TOO_MANY_KEYS bug
@@ -227,5 +235,5 @@ const seedDatabase = async () => {
     }
 };
 
-module.exports = { sequelize, Hotel, Client, Chambre, CodeAcces, Admin, Commande, DemandeService, Activitee, Experience, MenuItem, InternalService, Notification, LieuVisite, MarketingPage, seedDatabase };
+module.exports = { sequelize, Hotel, Client, Chambre, CodeAcces, Admin, Commande, DemandeService, Activitee, Experience, MenuItem, InternalService, Notification, LieuVisite, MarketingPage, PushSubscription, seedDatabase };
 

@@ -8,7 +8,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
-const { sequelize, Hotel, Client, Chambre, CodeAcces, Admin, Commande, DemandeService, Activitee, Experience, MenuItem, InternalService, Notification, LieuVisite, MarketingPage, seedDatabase } = require('./database');
+const { sequelize, Hotel, Client, Chambre, CodeAcces, Admin, Commande, DemandeService, Activitee, Experience, MenuItem, InternalService, Notification, LieuVisite, MarketingPage, PushSubscription, seedDatabase } = require('./database');
 
 const { Op } = require('sequelize');
 const swaggerUi = require('swagger-ui-express');
@@ -25,8 +25,7 @@ webpush.setVapidDetails(
     process.env.VAPID_PRIVATE_KEY
 );
 
-// Memory store for push subscriptions (In production, this should be in DB)
-const subscriptions = {};
+// Push subscriptions are now stored in DB
 
 // Ensure uploads folder exists
 const uploadDir = 'uploads';
@@ -184,11 +183,16 @@ app.get('/api/notifications', async (req, res) => {
 });
 
 // Store Push Subscription
-app.post('/api/notifications/subscribe', (req, res) => {
+app.post('/api/notifications/subscribe', async (req, res) => {
     const { clientId: client_id, subscription } = req.body;
     if (client_id && subscription) {
-        subscriptions[client_id] = subscription;
-        res.status(201).json({ success: true });
+        try {
+            await PushSubscription.upsert({ client_id, subscription });
+            res.status(201).json({ success: true });
+        } catch (err) {
+            console.error('Erreur sauvegarde subscription', err);
+            res.status(500).json({ success: false });
+        }
     } else {
         res.status(400).json({ success: false });
     }
@@ -230,26 +234,38 @@ app.post('/api/admin/notifications/send', authenticateAdmin, async (req, res) =>
   }
 
   if (client_id === 'all') {
-      const subs = Object.entries(subscriptions);
-      console.log(`Envoi global à ${subs.length} clients.`);
-      subs.forEach(([id, sub]) => {
-          webpush.sendNotification(sub, payload).catch(err => {
-              console.error(`Erreur global (Client ${id}):`, err);
-              if (err.statusCode === 410) delete subscriptions[id];
+      try {
+          const subs = await PushSubscription.findAll();
+          console.log(`Envoi global à ${subs.length} clients.`);
+          subs.forEach((subRecord) => {
+              webpush.sendNotification(subRecord.subscription, payload).catch(async err => {
+                  console.error(`Erreur global (Client ${subRecord.client_id}):`, err);
+                  if (err.statusCode === 410) {
+                      await PushSubscription.destroy({ where: { id: subRecord.id } });
+                  }
+              });
           });
-      });
-      return res.json({ success: true, count: subs.length });
+          return res.json({ success: true, count: subs.length });
+      } catch (err) {
+          return res.status(500).json({ success: false });
+      }
   } else {
-      const sub = subscriptions[client_id];
-      if (!sub) return res.status(404).json({ success: false, message: 'Client non connecté aux notifications.' });
+      try {
+          const subRecord = await PushSubscription.findOne({ where: { client_id } });
+          if (!subRecord) return res.status(404).json({ success: false, message: 'Client non connecté aux notifications.' });
 
-      webpush.sendNotification(sub, payload)
-          .then(() => res.json({ success: true }))
-          .catch(err => {
-              console.error('Erreur push admin:', err);
-              if (err.statusCode === 410) delete subscriptions[client_id];
-              res.status(500).json({ success: false, error: err.message });
-          });
+          webpush.sendNotification(subRecord.subscription, payload)
+              .then(() => res.json({ success: true }))
+              .catch(async err => {
+                  console.error('Erreur push admin:', err);
+                  if (err.statusCode === 410) {
+                      await PushSubscription.destroy({ where: { id: subRecord.id } });
+                  }
+                  res.status(500).json({ success: false, error: err.message });
+              });
+      } catch (err) {
+          return res.status(500).json({ success: false });
+      }
   }
 });
 
@@ -257,9 +273,23 @@ app.post('/api/admin/notifications/send', authenticateAdmin, async (req, res) =>
 
 app.get('/api/admin/requests', authenticateAdmin, async (req, res) => {
     try {
-        const orders = await Commande.findAll({ order: [['createdAt', 'DESC']] });
-        const services = await DemandeService.findAll({ order: [['createdAt', 'DESC']] });
-        res.json({ success: true, orders, services });
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 100;
+        const offset = (page - 1) * limit;
+
+        const ordersData = await Commande.findAndCountAll({ order: [['createdAt', 'DESC']], limit, offset });
+        const servicesData = await DemandeService.findAndCountAll({ order: [['createdAt', 'DESC']], limit, offset });
+        
+        res.json({ 
+            success: true, 
+            orders: ordersData.rows, 
+            totalOrders: ordersData.count,
+            services: servicesData.rows, 
+            totalServices: servicesData.count,
+            page,
+            totalPagesOrders: Math.ceil(ordersData.count / limit),
+            totalPagesServices: Math.ceil(servicesData.count / limit)
+        });
     } catch (err) {
         res.status(500).json({ success: false });
     }
@@ -299,19 +329,23 @@ app.put('/api/admin/requests/:type/:id', authenticateAdmin, async (req, res) => 
             });
 
             // Send Real Push Notification via Web-Push
-            const subscription = subscriptions[activity.client_id];
-            if (subscription) {
-              const payload = JSON.stringify({
-                title: type === 'order' ? 'Statut de Commande' : 'Statut de Service',
-                body: message,
-                url: '/client/services?modal=history' 
-              });
-              webpush.sendNotification(subscription, payload).catch(err => {
-                console.error("Error sending push notification:", err);
-                if (err.statusCode === 410) {
-                  delete subscriptions[activity.client_id]; // Clean up expired subscriptions
+            try {
+                const subRecord = await PushSubscription.findOne({ where: { client_id: activity.client_id } });
+                if (subRecord) {
+                  const payload = JSON.stringify({
+                    title: type === 'order' ? 'Statut de Commande' : 'Statut de Service',
+                    body: message,
+                    url: '/client/services?modal=history' 
+                  });
+                  webpush.sendNotification(subRecord.subscription, payload).catch(async err => {
+                    console.error("Error sending push notification:", err);
+                    if (err.statusCode === 410) {
+                      await PushSubscription.destroy({ where: { id: subRecord.id } }); // Clean up expired subscriptions
+                    }
+                  });
                 }
-              });
+            } catch(e) {
+                console.error('Error fetching subscription for status update', e);
             }
         }
 
@@ -328,7 +362,8 @@ app.post('/api/admin/auth', async (req, res) => {
         const admin = await Admin.findOne({ where: { username } });
         if (admin && await bcrypt.compare(password, admin.password)) {
             const token = jwt.sign({ id: admin.id, username: admin.username }, JWT_SECRET, { expiresIn: '12h' });
-            return res.json({ success: true, token });
+            const refreshToken = jwt.sign({ id: admin.id, username: admin.username }, JWT_SECRET, { expiresIn: '7d' });
+            return res.json({ success: true, token, refreshToken });
         }
         res.status(401).json({ success: false, message: 'Identifiants invalides' });
     } catch (err) {
@@ -386,8 +421,24 @@ app.delete('/api/admin/chambres/:id', authenticateAdmin, async (req, res) => {
 
 app.get('/api/admin/clients', authenticateAdmin, async (req, res) => {
     try {
-        const clients = await Client.findAll({ include: [{ model: CodeAcces, include: [Chambre] }] });
-        res.json({ success: true, clients });
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 100;
+        const offset = (page - 1) * limit;
+
+        const clientsData = await Client.findAndCountAll({ 
+            include: [{ model: CodeAcces, include: [Chambre] }],
+            order: [['createdAt', 'DESC']],
+            limit,
+            offset
+        });
+
+        res.json({ 
+            success: true, 
+            clients: clientsData.rows,
+            totalClients: clientsData.count,
+            page,
+            totalPages: Math.ceil(clientsData.count / limit)
+        });
     } catch (err) {
         res.status(500).json({ success: false });
     }
@@ -437,12 +488,32 @@ app.post('/api/auth', async (req, res) => {
 
         if (code && code.Client) {
             const token = jwt.sign({ clientId: code.Client.id, chambre: chambre.numero }, JWT_SECRET, { expiresIn: '24h' });
-            return res.json({ success: true, token, client_id: code.Client.id, chambre: chambre.numero, client: code.Client });
+            const refreshToken = jwt.sign({ clientId: code.Client.id, chambre: chambre.numero }, JWT_SECRET, { expiresIn: '7d' });
+            return res.json({ success: true, token, refreshToken, client_id: code.Client.id, chambre: chambre.numero, client: code.Client });
         }
         res.status(401).json({ success: false, message: 'Invalid code' });
     } catch (err) {
         res.status(500).json({ success: false });
     }
+});
+
+app.post('/api/refresh', (req, res) => {
+    const { refreshToken } = req.body;
+    if (!refreshToken) return res.status(401).json({ success: false, message: 'Refresh token requis' });
+
+    jwt.verify(refreshToken, JWT_SECRET, (err, user) => {
+        if (err) return res.status(403).json({ success: false, message: 'Refresh token invalide ou expiré' });
+        
+        let token, newRefreshToken;
+        if (user.username) { // admin
+            token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '12h' });
+            newRefreshToken = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '7d' });
+        } else { // client
+            token = jwt.sign({ clientId: user.clientId, chambre: user.chambre }, JWT_SECRET, { expiresIn: '24h' });
+            newRefreshToken = jwt.sign({ clientId: user.clientId, chambre: user.chambre }, JWT_SECRET, { expiresIn: '7d' });
+        }
+        res.json({ success: true, token, refreshToken: newRefreshToken });
+    });
 });
 
 app.get('/api/activities', async (req, res) => {
