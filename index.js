@@ -808,12 +808,59 @@ app.post('/api/admin/upload', authenticateAdmin, upload.single('image'), (req, r
     }
 });
 
+const activeClientsMap = new Map();
+
 io.on('connection', (socket) => {
     console.log(`--- GUEST CONNECTED: ${socket.id} ---`);
-    socket.on('join_room', (chambre) => {
-        const roomName = `room_${String(chambre)}`;
-        socket.join(roomName);
-        console.log(`--- GUEST JOINED ROOM: ${roomName} ---`);
+    
+    socket.on('join_room', async (data) => {
+        let ch, cid;
+        if (typeof data === 'string') {
+             ch = data; // Legacy fallback
+        } else {
+             ch = data.chambre;
+             cid = data.clientId;
+        }
+
+        if (ch) {
+            const roomName = `room_${String(ch)}`;
+            socket.join(roomName);
+            console.log(`--- GUEST JOINED ROOM: ${roomName} ---`);
+        }
+
+        if (cid) {
+            try {
+                const client = await Client.findByPk(cid);
+                if (client) {
+                    const clientData = {
+                        clientId: cid,
+                        prenom: client.prenom,
+                        nom: client.nom,
+                        chambre: ch,
+                        time: new Date()
+                    };
+                    activeClientsMap.set(socket.id, clientData);
+                    
+                    // Broadcast to admins
+                    io.emit('client_connected', clientData);
+                    io.emit('active_clients_list', Array.from(activeClientsMap.values()));
+                }
+            } catch (err) {
+                console.error("Error fetching client for socket", err);
+            }
+        }
+    });
+
+    socket.on('get_active_clients', () => {
+        socket.emit('active_clients_list', Array.from(activeClientsMap.values()));
+    });
+
+    socket.on('disconnect', () => {
+        console.log(`--- GUEST DISCONNECTED: ${socket.id} ---`);
+        if (activeClientsMap.has(socket.id)) {
+            activeClientsMap.delete(socket.id);
+            io.emit('active_clients_list', Array.from(activeClientsMap.values()));
+        }
     });
 });
 
